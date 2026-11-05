@@ -1118,7 +1118,8 @@ def exe_download(exe, url, mode, folder, cfg, q, quality, cancel, section=None):
     done_file = TEMP_DIR / f"final_{int(t0)}.txt"
     cmd = [exe, "--newline", "--no-colors", "--no-playlist", "--windows-filenames",
            "--no-mtime",
-           "--retries", "10", "--fragment-retries", "10", "--socket-timeout", "30",
+           "--force-ipv4", "--impersonate", "chrome", "--no-part",
+           "--retries", "3", "--fragment-retries", "3", "--socket-timeout", "30",
            "--concurrent-fragments", "4",
            "-P", f"home:{folder}", "-P", f"temp:{TEMP_DIR}",
            "-o", f"%(title).80s [%(id)s]{job_suffix}.%(ext)s",
@@ -1325,6 +1326,8 @@ def run_download(url, mode, folder, cfg, q, quality, cancel, section=None, image
                 "noplaylist": mode != "image", "quiet": True, "no_warnings": True, "noprogress": True,
                 "windowsfilenames": True, "progress_hooks": [hook], "postprocessor_hooks": [phook],
                 "concurrent_fragment_downloads": 4,
+                "socket_timeout": 30, "retries": 3, "fragment_retries": 3,
+                "force_ipv4": True, "impersonate": __import__("yt_dlp.networking.impersonate", fromlist=["ImpersonateTarget"]).ImpersonateTarget.from_str("chrome"), "nopart": True,
                 "paths": {"home": str(TEMP_DIR), "temp": str(TEMP_DIR)}, 
             }
             if ff:
@@ -2470,7 +2473,8 @@ def build_app():
                     import yt_dlp
                     ensure_temp_dir()
                     opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-                            "socket_timeout": 10, "retries": 0, "extractor_retries": 0,
+                            "socket_timeout": 15, "retries": 0, "extractor_retries": 0,
+                            "force_ipv4": True, "impersonate": __import__("yt_dlp.networking.impersonate", fromlist=["ImpersonateTarget"]).ImpersonateTarget.from_str("chrome"),
                             "paths": {"temp": str(TEMP_DIR)}}
                     opts.update(yt_cookie_opts(url))
                     with yt_dlp.YoutubeDL(opts) as ydl:
