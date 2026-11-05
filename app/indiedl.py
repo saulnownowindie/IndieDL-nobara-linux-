@@ -751,14 +751,31 @@ def cookie_source(cfg):
 
 COOKIES_FILE = APP_DIR / "instagram_cookies.txt"
 YT_COOKIES = APP_DIR / "youtube_cookies.txt"
+AUTO_COOKIES = APP_DIR / "cookies.txt"
+
+def auto_cookies_path():
+    try:
+        if AUTO_COOKIES.is_file() and AUTO_COOKIES.stat().st_size > 0:
+            return str(AUTO_COOKIES)
+    except OSError:
+        pass
+    return None
 
 def yt_cookie_opts(url):
+    auto = auto_cookies_path()
+    if auto:
+        return {"cookiefile": auto}
     u = str(url).lower()
+    if "instagram.com" in u and COOKIES_FILE.is_file() and COOKIES_FILE.stat().st_size > 0:
+        return {"cookiefile": str(COOKIES_FILE)}
     if ("youtube.com" in u or "youtu.be" in u) and YT_COOKIES.is_file() and YT_COOKIES.stat().st_size > 0:
         return {"cookiefile": str(YT_COOKIES)}
     return {}
 
 def cookies_file_path(cfg=None):
+    auto = auto_cookies_path()
+    if auto:
+        return auto
     try:
         if COOKIES_FILE.is_file() and COOKIES_FILE.stat().st_size > 0:
             return str(COOKIES_FILE)
@@ -1138,7 +1155,10 @@ def exe_download(exe, url, mode, folder, cfg, q, quality, cancel, section=None):
         cmd += ["-f", vfmt(quality), "--merge-output-format", "mp4"]
         if section:
             cmd += ["--download-sections", f"*{section[0]}-{section[1]}", "--force-keyframes-at-cuts"]
-    if "instagram.com" in url.lower() and cookies_file_path(cfg):
+    _auto_cookie = auto_cookies_path()
+    if _auto_cookie:
+        cmd += ["--cookies", _auto_cookie]
+    elif "instagram.com" in url.lower() and cookies_file_path(cfg):
         cmd += ["--cookies", cookies_file_path(cfg)]
         q.put(("log", "Sesión de Instagram: archivo cookies.txt"))
     elif "instagram.com" in url.lower():
@@ -1744,6 +1764,7 @@ def build_app():
             self._carousel_thumb_refs = []
             self._metadata_cache = {}
             self._metadata_loading = set()
+            self._thumb_cache = {}
             self._metadata_generation = 0
             self._last_clip_url = None
             self._last_site = None
@@ -2455,7 +2476,13 @@ def build_app():
 
         def fetch_metadata(self, url):
             if url in self._metadata_cache:
-                info = self._metadata_cache[url]
+                cached = self._metadata_cache[url]
+                if isinstance(cached, dict) and "info" in cached:
+                    info = cached["info"]
+                    cached_thumb = cached.get("thumb")
+                else:
+                    info = cached
+                    cached_thumb = self._thumb_cache.get(url)
                 title = str(info.get("title") or "Contenido detectado")
                 author = str(info.get("uploader") or info.get("channel") or info.get("creator") or "Autor no disponible")
                 duration = info.get("duration")
@@ -2463,7 +2490,31 @@ def build_app():
                 width, height = info.get("width"), info.get("height")
                 resolution = f"{width} × {height}" if width and height else "Resolución disponible al descargar"
                 meta = f"@{author.lstrip('@')}  ·  {duration_text}  ·  {resolution}  ·  {str(info.get('ext') or 'media').upper()}"
-                self.apply_metadata(url, title, meta, None, "Miniatura no disponible")
+                self.apply_metadata(url, title, meta, cached_thumb, "Miniatura cargada" if cached_thumb else "Miniatura no disponible")
+                if not cached_thumb:
+                    def _bg_thumb(u=url, inf=info):
+                        cands = []
+                        t = inf.get("thumbnail")
+                        if isinstance(t, str) and t.startswith(("http://", "https://")):
+                            cands.append(t)
+                        for item in (inf.get("thumbnails") or []):
+                            if isinstance(item, dict):
+                                cu = item.get("url")
+                                if isinstance(cu, str) and cu.startswith(("http://", "https://")):
+                                    cands.append(cu)
+                        for tu in list(dict.fromkeys(cands)):
+                            try:
+                                from urllib.request import Request, urlopen
+                                req = Request(tu, headers={"User-Agent": "Mozilla/5.0", "Referer": u})
+                                with urlopen(req, timeout=8) as resp:
+                                    data = resp.read(3_000_000)
+                                if data:
+                                    self._thumb_cache[u] = data
+                                    self.after(0, lambda d=data: self.apply_metadata(u, None, None, d, "Miniatura cargada"))
+                                    return
+                            except Exception:
+                                pass
+                    threading.Thread(target=_bg_thumb, daemon=True).start()
                 return
             if url in self._metadata_loading:
                 return
@@ -2473,13 +2524,14 @@ def build_app():
                     import yt_dlp
                     ensure_temp_dir()
                     opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
+                            "extract_flat": "in_playlist",
                             "socket_timeout": 15, "retries": 0, "extractor_retries": 0,
                             "force_ipv4": True, "impersonate": __import__("yt_dlp.networking.impersonate", fromlist=["ImpersonateTarget"]).ImpersonateTarget.from_str("chrome"),
                             "paths": {"temp": str(TEMP_DIR)}}
                     opts.update(yt_cookie_opts(url))
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(url, download=False)
-                    self._metadata_cache[url] = info
+                    self._metadata_cache[url] = {"info": info, "thumb": None}
                     title = str(info.get("title") or "Contenido detectado")
                     author = str(info.get("uploader") or info.get("channel") or info.get("creator") or "Autor no disponible")
                     description = str(info.get("description") or "").strip().replace("\n", " ")
@@ -2494,6 +2546,7 @@ def build_app():
                     meta = f"@{author.lstrip('@')}  ·  {duration}  ·  {resolution}  ·  {ext}"
                     if description:
                         meta += "\n" + description
+                    self.after(0, lambda t=title, m=meta: self.apply_metadata(url, t, m, None, "Cargando miniatura…"))
                     thumb_data = None
                     thumb_candidates = []
                     for candidate in (
@@ -2513,25 +2566,41 @@ def build_app():
                                     thumb_candidates.append(candidate)
                     thumb_candidates = list(dict.fromkeys(thumb_candidates))
                     if thumb_candidates:
-                        try:
-                            from urllib.request import Request, urlopen
-                            for thumb_url in thumb_candidates:
+                        for thumb_url in thumb_candidates:
+                            try:
                                 try:
-                                    req = Request(thumb_url, headers={
+                                    from yt_dlp.networking import Request as YdlRequest
+                                    req = YdlRequest(thumb_url, headers={
                                         "User-Agent": "Mozilla/5.0",
-                                        "Referer": "https://www.tiktok.com/",
+                                        "Referer": url,
                                         "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
                                     })
-                                    with urlopen(req, timeout=5) as response:
-                                        data = response.read(2_500_000)
+                                    with ydl.urlopen(req) as response:
+                                        data = response.read(3_000_000)
                                     if data:
                                         thumb_data = data
                                         break
                                 except Exception as thumb_exc:
-                                    log(f"thumbnail candidate {url} ({thumb_url[:100]}): {thumb_exc!r}")
-                        except Exception as thumb_exc:
-                            log(f"thumbnail {url}: {thumb_exc!r}")
-                    self.after(0, lambda: self.apply_metadata(url, title, meta, thumb_data, "Miniatura cargada" if thumb_data else "No se pudo cargar la miniatura"))
+                                    from urllib.request import Request, urlopen
+                                    req = Request(thumb_url, headers={
+                                        "User-Agent": "Mozilla/5.0",
+                                        "Referer": url,
+                                        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                                    })
+                                    with urlopen(req, timeout=8) as response:
+                                        data = response.read(3_000_000)
+                                    if data:
+                                        thumb_data = data
+                                        break
+                            except Exception as thumb_exc:
+                                log(f"thumbnail candidate {url} ({thumb_url[:100]}): {thumb_exc!r}")
+                    try:
+                        if isinstance(self._metadata_cache.get(url), dict):
+                            self._metadata_cache[url]["thumb"] = thumb_data
+                        self._thumb_cache[url] = thumb_data
+                    except Exception:
+                        pass
+                    self.after(0, lambda td=thumb_data: self.apply_metadata(url, title, meta, td, "Miniatura cargada" if td else "No se pudo cargar la miniatura"))
                 except Exception as exc:
                     log(f"metadata yt-dlp {url}: {exc!r}\n{traceback.format_exc()}")
                     if "instagram.com/p/" in url.lower() or "pinterest." in url.lower() or "pin.it/" in url.lower():
@@ -2567,8 +2636,10 @@ def build_app():
         def apply_metadata(self, url, title, meta, thumb_data=None, thumb_status=None):
             if self.url.get().strip() != url:
                 return
-            self.preview_title.configure(text=title)
-            self.preview_meta.configure(text=meta)
+            if title is not None:
+                self.preview_title.configure(text=title)
+            if meta is not None:
+                self.preview_meta.configure(text=meta)
             if thumb_data:
                 try:
                     import io

@@ -59,6 +59,18 @@ Tiene que abrirse la ventana «Indie Now DL» con la URL cargada.
 
 `parche.py` es idempotente: se puede volver a ejecutar tras un `git pull`.
 
+## Cookies de Instagram (opcional, recomendado)
+
+Para evitar bloqueos y acelerar la conexión inicial, poné un `cookies.txt`
+exportado de instagram.com en:
+
+```
+~/.local/share/IndieDL/cookies.txt
+```
+
+IndieDL lo detecta automáticamente y lo usa como `cookiefile` en yt-dlp.
+La miniatura y el título aparecen en la ventana mientras se descarga.
+
 ## Requisitos
 
 - Python 3.10+ con Tkinter (`python3-tkinter`).
